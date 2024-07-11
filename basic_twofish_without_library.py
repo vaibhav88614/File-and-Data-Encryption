@@ -76,10 +76,28 @@ def f_function(X, round_keys):
     
     return (F0, F1)
 
+def mix_columns(block):
+    """MixColumns operation in Twofish"""
+    col1 = (block >> 96) & 0xFFFFFFFF
+    col2 = (block >> 64) & 0xFFFFFFFF
+    col3 = (block >> 32) & 0xFFFFFFFF
+    col4 = block & 0xFFFFFFFF
+    
+    mixed_col1 = (MDS_MATRIX[0][0] * col1 + MDS_MATRIX[0][1] * col2 +
+                  MDS_MATRIX[0][2] * col3 + MDS_MATRIX[0][3] * col4) & 0xFFFFFFFF
+    mixed_col2 = (MDS_MATRIX[1][0] * col1 + MDS_MATRIX[1][1] * col2 +
+                  MDS_MATRIX[1][2] * col3 + MDS_MATRIX[1][3] * col4) & 0xFFFFFFFF
+    mixed_col3 = (MDS_MATRIX[2][0] * col1 + MDS_MATRIX[2][1] * col2 +
+                  MDS_MATRIX[2][2] * col3 + MDS_MATRIX[2][3] * col4) & 0xFFFFFFFF
+    mixed_col4 = (MDS_MATRIX[3][0] * col1 + MDS_MATRIX[3][1] * col2 +
+                  MDS_MATRIX[3][2] * col3 + MDS_MATRIX[3][3] * col4) & 0xFFFFFFFF
+    
+    return (mixed_col1 << 96) | (mixed_col2 << 64) | (mixed_col3 << 32) | mixed_col4
+
 def encrypt_block(block, round_keys):
     """Encrypts one block using Twofish"""
-    L0 = block >> 64
-    R0 = block & ((1 << 64) - 1)
+    L0 = block >> 128
+    R0 = block & ((1 << 128) - 1)
     L1 = R0
     R1 = L0 ^ f_function(R0, round_keys)[0]
     L2 = R1
@@ -87,7 +105,7 @@ def encrypt_block(block, round_keys):
     L3 = R2
     R3 = L2 ^ f_function(R2, round_keys)[0]
     
-    return (L3 << 64) | R3
+    return (L3 << 128) | R3
 
 def twofish_encrypt(data, key):
     """Encrypts data using Twofish with a given key"""
@@ -98,7 +116,7 @@ def twofish_encrypt(data, key):
     for i in range(0, len(data), 16):
         block = int.from_bytes(data[i:i + 16].ljust(16, b'\0'), byteorder='big')
         encrypted_block = encrypt_block(block, round_keys)
-        encrypted_data.append(encrypted_block.to_bytes(16, byteorder='big'))
+        encrypted_data.append(encrypted_block.to_bytes(32, byteorder='big'))
     
     return b''.join(encrypted_data)
 
@@ -108,8 +126,8 @@ def twofish_decrypt(data, key):
     round_keys = generate_round_keys(key)
     
     decrypted_data = []
-    for i in range(0, len(data), 16):
-        block = int.from_bytes(data[i:i + 16], byteorder='big')
+    for i in range(0, len(data), 32):
+        block = int.from_bytes(data[i:i + 32], byteorder='big')
         decrypted_block = encrypt_block(block, round_keys)  # Encryption and decryption are the same
         decrypted_data.append(decrypted_block.to_bytes(16, byteorder='big'))
     
