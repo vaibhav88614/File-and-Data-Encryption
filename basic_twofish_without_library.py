@@ -10,73 +10,114 @@ SBOX = [
     [0x83, 0xF0, 0x6A, 0x05, 0x8A, 0x3F, 0x11, 0x8B]
 ]
 
+MDS_MATRIX = [
+    [0x01, 0xEF, 0x5B, 0x5B],
+    [0x5B, 0xEF, 0xEF, 0x01],
+    [0xEF, 0x5B, 0x01, 0xEF],
+    [0xEF, 0x01, 0xEF, 0x5B]
+]
+
 def rotate_left(x, n, b):
+    """Rotate left function"""
     return ((x << n) | (x >> (b - n))) & ((1 << b) - 1)
 
-def g_function(h, K):
-    """Twofish's G function"""
-    h1 = (h >> 24) & 0xFF
-    h2 = (h >> 16) & 0xFF
-    h3 = (h >> 8) & 0xFF
-    h4 = h & 0xFF
+def h_function(X, K):
+    """H function for key scheduling"""
+    # Split X into bytes
+    x = [(X >> (8 * i)) & 0xFF for i in range(4)]
+    h = [0] * 4
     
-    K1 = (K >> 24) & 0xFF
-    K2 = (K >> 16) & 0xFF
-    K3 = (K >> 8) & 0xFF
-    K4 = K & 0xFF
+    for i in range(4):
+        h[i] = SBOX[i][(x[0] >> (8 * i)) & 0xFF]
+        h[i] ^= SBOX[i + 4][(x[1] >> (8 * i)) & 0xFF]
+        h[i] ^= SBOX[i + 4][(x[2] >> (8 * i)) & 0xFF]
+        h[i] ^= SBOX[i][(x[3] >> (8 * i)) & 0xFF]
+        h[i] ^= (K >> (8 * i)) & 0xFF
     
-    g1 = (SBOX[0][h1] + SBOX[1][h2]) & 0xFF
-    g2 = (SBOX[2][h3] + SBOX[3][h4]) & 0xFF
-    g = (g1 ^ g2) ^ K1
-    
-    return (g, h2, h3, h4)
+    return sum((h[i] << (8 * i)) for i in range(4))
 
-def encrypt_block(block, K):
+def generate_round_keys(key):
+    """Generate round keys for Twofish"""
+    key_len = len(key)
+    if key_len not in [16, 24, 32]:
+        raise ValueError("Key size must be 128, 192, or 256 bits (16, 24, or 32 bytes)")
+    
+    N = key_len // 8
+    M = 2 * N
+    
+    # Initialize arrays
+    K = [0] * N
+    L = [0] * N
+    for i in range(N):
+        K[i] = int.from_bytes(key[i * 4:(i + 1) * 4], byteorder='little')
+        L[i] = int.from_bytes(key[(N + i) * 4:(N + i + 1) * 4], byteorder='little')
+    
+    # Generate round keys
+    round_keys = [0] * (2 * M + 8)
+    for i in range(M):
+        round_keys[i] = h_function(2 * i * 0x01010101, K)
+        round_keys[M + i] = rotate_left(h_function((2 * i + 1) * 0x01010101, L), 8, 32)
+    
+    return round_keys
+
+def f_function(X, round_keys):
+    """F function used in encryption"""
+    # Split X into bytes
+    x = [(X >> (8 * i)) & 0xFF for i in range(4)]
+    y = [0] * 4
+    
+    for i in range(4):
+        y[i] = SBOX[i][x[0]] + SBOX[i + 4][x[1]]
+        y[i] ^= SBOX[i + 4][x[2]] + SBOX[i][x[3]]
+        y[i] ^= round_keys[2 * i]
+    
+    F0 = (y[0] + y[1]) & 0xFFFFFFFF
+    F1 = (y[2] + y[3]) & 0xFFFFFFFF
+    
+    return (F0, F1)
+
+def encrypt_block(block, round_keys):
     """Encrypts one block using Twofish"""
-    L = block >> 64
-    R = block & ((1 << 64) - 1)
+    L0 = block >> 64
+    R0 = block & ((1 << 64) - 1)
+    L1 = R0
+    R1 = L0 ^ f_function(R0, round_keys)[0]
+    L2 = R1
+    R2 = L1 ^ f_function(R1, round_keys)[1]
+    L3 = R2
+    R3 = L2 ^ f_function(R2, round_keys)[0]
     
-    for i in range(8):
-        K1 = (K >> (8 * i)) & 0xFFFFFFFF
-        K2 = (K >> (8 * i + 32)) & 0xFFFFFFFF
-        g1, g2, g3, g4 = g_function(R, K1)
-        f1 = (g1 ^ g2) ^ g3
-        f2 = g4
-        L, R = R, L ^ (rotate_left(f1 + 2 * f2, 1, 64))
-    
-    return (R << 64) | L
+    return (L3 << 64) | R3
 
 def twofish_encrypt(data, key):
     """Encrypts data using Twofish with a given key"""
     key = key.ljust(32, b'\0')[:32]  # Pad or trim key to 32 bytes
+    round_keys = generate_round_keys(key)
     
-    K = int.from_bytes(key, 'big')
     encrypted_data = []
-    
     for i in range(0, len(data), 16):
-        block = int.from_bytes(data[i:i+16].ljust(16, b'\0'), 'big')
-        encrypted_block = encrypt_block(block, K)
-        encrypted_data.append(encrypted_block.to_bytes(16, 'big'))
+        block = int.from_bytes(data[i:i + 16].ljust(16, b'\0'), byteorder='big')
+        encrypted_block = encrypt_block(block, round_keys)
+        encrypted_data.append(encrypted_block.to_bytes(16, byteorder='big'))
     
     return b''.join(encrypted_data)
 
 def twofish_decrypt(data, key):
     """Decrypts data using Twofish with a given key"""
     key = key.ljust(32, b'\0')[:32]  # Pad or trim key to 32 bytes
+    round_keys = generate_round_keys(key)
     
-    K = int.from_bytes(key, 'big')
     decrypted_data = []
-    
     for i in range(0, len(data), 16):
-        block = int.from_bytes(data[i:i+16], 'big')
-        decrypted_block = encrypt_block(block, K)  # Encryption and decryption are the same in this simplified version
-        decrypted_data.append(decrypted_block.to_bytes(16, 'big'))
+        block = int.from_bytes(data[i:i + 16], byteorder='big')
+        decrypted_block = encrypt_block(block, round_keys)  # Encryption and decryption are the same
+        decrypted_data.append(decrypted_block.to_bytes(16, byteorder='big'))
     
     return b''.join(decrypted_data)
 
 def main():
     data = input("Enter the text to encrypt: ").encode()
-    key = input("Enter the key (must be 16 bytes): ").encode()
+    key = input("Enter the key (must be 16, 24, or 32 bytes): ").encode()
     
     ciphertext = twofish_encrypt(data, key)
     decrypted_text = twofish_decrypt(ciphertext, key)
